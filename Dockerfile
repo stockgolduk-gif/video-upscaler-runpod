@@ -14,3 +14,9 @@ RUN apt-get update && apt-get install -y \
 RUN pip3 install --no-cache-dir runpod
 
 WORKDIR /app
+
+COPY . /app
+
+CMD ["python3", "handler.py"]
+
+   a
