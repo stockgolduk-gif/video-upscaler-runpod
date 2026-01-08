@@ -18,5 +18,3 @@ WORKDIR /app
 COPY . /app
 
 CMD ["python3", "handler.py"]
-
-   a
