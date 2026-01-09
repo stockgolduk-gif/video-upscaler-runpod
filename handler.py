@@ -84,7 +84,6 @@ def handler(job):
             "error": "Missing required field: input.video_url (string)."
         }
 
-    # We won't enforce scale_factor yet, but we validate it's present if provided
     if scale_factor is not None and scale_factor not in (2, 3):
         return {
             "status": "error",
@@ -101,16 +100,45 @@ def handler(job):
     probe = _ffprobe(local_path)
     meta = _extract_video_metadata(probe)
 
-    # Basic safety checks (non-blocking for now — just return info)
+    # -----------------------------
+    # FFmpeg processing step
+    # -----------------------------
+
+    sf = scale_factor or 2
+
+    output_name = f"upscaled_{meta['width'] * sf}x{meta['height'] * sf}.mp4"
+    output_path = TMP_DIR / output_name
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i", str(local_path),
+        "-vf", f"scale=iw*{sf}:ih*{sf}:flags=lanczos",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "18",
+        "-movflags", "+faststart",
+        str(output_path)
+    ]
+
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        return {
+            "status": "error",
+            "error": "ffmpeg failed",
+            "stderr": p.stderr[-1000:]
+        }
+
     return {
         "status": "ok",
-        "message": "Downloaded and probed video successfully",
-        "received_input": {
-            "video_url": video_url,
-            "scale_factor": scale_factor
-        },
-        "local_path": str(local_path),
-        "metadata": meta
+        "message": "Video processed successfully",
+        "input_path": str(local_path),
+        "output_path": str(output_path),
+        "output_exists": output_path.exists(),
+        "output_resolution": {
+            "width": meta["width"] * sf,
+            "height": meta["height"] * sf
+        }
     }
 
 runpod.serverless.start({"handler": handler})
