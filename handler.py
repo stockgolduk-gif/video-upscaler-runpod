@@ -154,5 +154,4 @@ def handler(job):
             "public_url": public_url
         }
     }
-
 runpod.serverless.start({"handler": handler})
