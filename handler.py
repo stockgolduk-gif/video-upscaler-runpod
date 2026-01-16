@@ -5,11 +5,16 @@ import subprocess
 import urllib.request
 import urllib.parse
 from pathlib import Path
+import shutil
 
 import boto3
 from botocore.client import Config
 
 TMP_DIR = Path("/tmp")
+
+# -------------------------
+# Utility helpers
+# -------------------------
 
 def _safe_filename_from_url(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
@@ -23,9 +28,9 @@ def _download(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "runpod-upscaler/1.0"}
+        headers={"User-Agent": "runpod-video-upscaler/1.0"}
     )
-    with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
+    with urllib.request.urlopen(req, timeout=180) as r, open(dest, "wb") as f:
         f.write(r.read())
 
 def _ffprobe(path: Path) -> dict:
@@ -58,8 +63,7 @@ def _extract_video_metadata(probe: dict) -> dict:
     except Exception:
         fps = 0.0
 
-    fmt = probe.get("format", {})
-    duration = float(fmt.get("duration") or 0.0)
+    duration = float(probe.get("format", {}).get("duration") or 0.0)
 
     return {
         "width": width,
@@ -69,6 +73,10 @@ def _extract_video_metadata(probe: dict) -> dict:
         "codec": v.get("codec_name"),
         "pix_fmt": v.get("pix_fmt"),
     }
+
+# -------------------------
+# R2 upload
+# -------------------------
 
 def _upload_to_r2(file_path: Path, object_name: str) -> str:
     account_id = os.environ["R2_ACCOUNT_ID"]
@@ -96,22 +104,98 @@ def _upload_to_r2(file_path: Path, object_name: str) -> str:
 
     return f"https://pub-{account_id}.r2.dev/{bucket}/{object_name}"
 
+# -------------------------
+# AI Upscaling (Real-ESRGAN)
+# -------------------------
+
+def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
+    """
+    Full AI pipeline:
+    - Extract frames
+    - Upscale frames with Real-ESRGAN
+    - Reassemble video
+    """
+
+    frames_dir = TMP_DIR / "frames"
+    upscaled_dir = TMP_DIR / "frames_upscaled"
+
+    shutil.rmtree(frames_dir, ignore_errors=True)
+    shutil.rmtree(upscaled_dir, ignore_errors=True)
+
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    upscaled_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Extract frames (lossless)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i", str(input_video),
+            "-vsync", "0",
+            str(frames_dir / "frame_%06d.png"),
+        ],
+        check=True
+    )
+
+    # 2. Decide scale (stock-safe rules)
+    input_height = meta["height"]
+
+    if input_height >= 1080:
+        scale = 2
+    elif input_height == 720:
+        scale = 2
+    else:
+        raise RuntimeError("Input resolution too low for stock-safe AI upscaling")
+
+    # 3. Run Real-ESRGAN (GPU required – will activate once Docker + A10 are added)
+    subprocess.run(
+        [
+            "python3",
+            "inference_realesrgan.py",
+            "-n", "RealESRGAN_x2plus",
+            "-s", str(scale),
+            "-i", str(frames_dir),
+            "-o", str(upscaled_dir),
+            "--fp32",
+        ],
+        check=True
+    )
+
+    # 4. Reassemble video
+    output_width = meta["width"] * scale
+    output_height = meta["height"] * scale
+    output_path = TMP_DIR / f"upscaled_{output_width}x{output_height}.mp4"
+
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-framerate", str(meta["fps"]),
+            "-i", str(upscaled_dir / "frame_%06d.png"),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-preset", "slow",
+            str(output_path),
+        ],
+        check=True
+    )
+
+    return output_path
+
+# -------------------------
+# Main handler
+# -------------------------
+
 def handler(job):
     job_input = job.get("input", {}) or {}
 
     video_url = job_input.get("video_url")
-    scale_factor = job_input.get("scale_factor", 2)
+    upscale_method = job_input.get("upscale_method", "ai")
 
     if not video_url or not isinstance(video_url, str):
         return {
             "status": "error",
             "error": "Missing required field: input.video_url"
-        }
-
-    if scale_factor not in (2, 3):
-        return {
-            "status": "error",
-            "error": "scale_factor must be 2 or 3"
         }
 
     input_filename = _safe_filename_from_url(video_url)
@@ -122,36 +206,28 @@ def handler(job):
     probe = _ffprobe(input_path)
     meta = _extract_video_metadata(probe)
 
-    out_width = meta["width"] * scale_factor
-    out_height = meta["height"] * scale_factor
-    output_filename = f"upscaled_{out_width}x{out_height}.mp4"
-    output_path = TMP_DIR / output_filename
+    try:
+        if upscale_method == "ai":
+            output_path = _ai_upscale_video(input_path, meta)
+        else:
+            raise RuntimeError("FFmpeg-only upscale path is disabled for stock quality")
 
-    ffmpeg_cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", str(input_path),
-        "-vf", f"scale=iw*{scale_factor}:ih*{scale_factor}:flags=lanczos",
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-pix_fmt", "yuv420p",
-        str(output_path),
-    ]
-
-    subprocess.run(ffmpeg_cmd, check=True)
+    except Exception:
+        raise  # fail hard – no silent downgrades for stock
 
     public_url = _upload_to_r2(
         file_path=output_path,
-        object_name=output_filename
+        object_name=output_path.name
     )
 
     return {
         "status": "ok",
-        "message": "Video processed and uploaded successfully",
+        "message": "AI upscaled video processed and uploaded successfully",
         "input_metadata": meta,
         "output": {
-            "filename": output_filename,
+            "filename": output_path.name,
             "public_url": public_url
         }
     }
+
 runpod.serverless.start({"handler": handler})
