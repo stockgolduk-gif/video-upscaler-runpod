@@ -6,7 +6,6 @@ import urllib.request
 import urllib.parse
 from pathlib import Path
 
-import requests
 import boto3
 from botocore.client import Config
 
@@ -72,18 +71,10 @@ def _extract_video_metadata(probe: dict) -> dict:
     }
 
 def _upload_to_r2(file_path: Path, object_name: str) -> str:
-    # 🔍 DEBUG — PROVE ENV INJECTION
-    account_id = os.environ.get("R2_ACCOUNT_ID", "MISSING")
-    access_key = os.environ.get("R2_ACCESS_KEY_ID", "MISSING")
-    secret_key = os.environ.get("R2_SECRET_ACCESS_KEY", "MISSING")
-    bucket = os.environ.get("R2_BUCKET_NAME", "MISSING")
-
-    print("DEBUG R2_ACCOUNT_ID =", account_id)
-    print("DEBUG R2_BUCKET_NAME =", bucket)
-    print("DEBUG ALL ENV KEYS =", sorted(os.environ.keys()))
-
-    if "MISSING" in (account_id, access_key, secret_key, bucket):
-        raise RuntimeError("One or more required R2 environment variables are missing")
+    account_id = os.environ["R2_ACCOUNT_ID"]
+    access_key = os.environ["R2_ACCESS_KEY_ID"]
+    secret_key = os.environ["R2_SECRET_ACCESS_KEY"]
+    bucket = os.environ["R2_BUCKET_NAME"]
 
     endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
 
@@ -103,8 +94,7 @@ def _upload_to_r2(file_path: Path, object_name: str) -> str:
         ExtraArgs={"ContentType": "video/mp4"}
     )
 
-    public_url = f"https://pub-{account_id}.r2.dev/{bucket}/{object_name}"
-    return public_url
+    return f"https://pub-{account_id}.r2.dev/{bucket}/{object_name}"
 
 def handler(job):
     job_input = job.get("input", {}) or {}
