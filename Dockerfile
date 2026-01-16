@@ -1,25 +1,64 @@
 FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    python3 \
-    python3-pip \
-    git \
-    wget \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install required Python dependencies
-RUN pip3 install --no-cache-dir \
-    runpod \
-    requests \
-    boto3
 
 WORKDIR /app
 
-COPY . /app
+# -------------------------
+# System dependencies
+# -------------------------
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    ffmpeg \
+    git \
+    ca-certificates \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# -------------------------
+# Python dependencies
+# -------------------------
+RUN pip3 install --upgrade pip
+
+# PyTorch (CUDA 12.1 compatible)
+RUN pip3 install torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cu121
+
+# Runtime deps
+RUN pip3 install \
+    runpod \
+    boto3 \
+    requests \
+    numpy \
+    opencv-python \
+    pillow \
+    tqdm \
+    basicsr \
+    facexlib \
+    gfpgan
+
+# -------------------------
+# Real-ESRGAN
+# -------------------------
+RUN git clone https://github.com/xinntao/Real-ESRGAN.git
+
+WORKDIR /app/Real-ESRGAN
+
+RUN pip3 install -r requirements.txt
+
+# Download model weights (stock-safe)
+RUN mkdir -p weights && \
+    wget -O weights/RealESRGAN_x2plus.pth \
+    https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x2plus.pth
+
+# -------------------------
+# App code
+# -------------------------
+WORKDIR /app
+COPY handler.py /app/handler.py
 
 CMD ["python3", "handler.py"]
