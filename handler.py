@@ -72,10 +72,18 @@ def _extract_video_metadata(probe: dict) -> dict:
     }
 
 def _upload_to_r2(file_path: Path, object_name: str) -> str:
-    account_id = os.environ["R2_ACCOUNT_ID"]
-    access_key = os.environ["R2_ACCESS_KEY_ID"]
-    secret_key = os.environ["R2_SECRET_ACCESS_KEY"]
-    bucket = os.environ["R2_BUCKET_NAME"]
+    # 🔍 DEBUG — PROVE ENV INJECTION
+    account_id = os.environ.get("R2_ACCOUNT_ID", "MISSING")
+    access_key = os.environ.get("R2_ACCESS_KEY_ID", "MISSING")
+    secret_key = os.environ.get("R2_SECRET_ACCESS_KEY", "MISSING")
+    bucket = os.environ.get("R2_BUCKET_NAME", "MISSING")
+
+    print("DEBUG R2_ACCOUNT_ID =", account_id)
+    print("DEBUG R2_BUCKET_NAME =", bucket)
+    print("DEBUG ALL ENV KEYS =", sorted(os.environ.keys()))
+
+    if "MISSING" in (account_id, access_key, secret_key, bucket):
+        raise RuntimeError("One or more required R2 environment variables are missing")
 
     endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
 
@@ -119,20 +127,16 @@ def handler(job):
     input_filename = _safe_filename_from_url(video_url)
     input_path = TMP_DIR / input_filename
 
-    # Download
     _download(video_url, input_path)
 
-    # Probe
     probe = _ffprobe(input_path)
     meta = _extract_video_metadata(probe)
 
-    # Output path
     out_width = meta["width"] * scale_factor
     out_height = meta["height"] * scale_factor
     output_filename = f"upscaled_{out_width}x{out_height}.mp4"
     output_path = TMP_DIR / output_filename
 
-    # Upscale (deterministic, CPU)
     ffmpeg_cmd = [
         "ffmpeg",
         "-y",
@@ -146,7 +150,6 @@ def handler(job):
 
     subprocess.run(ffmpeg_cmd, check=True)
 
-    # Upload to R2
     public_url = _upload_to_r2(
         file_path=output_path,
         object_name=output_filename
