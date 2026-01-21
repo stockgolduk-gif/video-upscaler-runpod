@@ -147,11 +147,11 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
     else:
         raise RuntimeError("Input resolution too low for stock-safe AI upscaling")
 
-    # 3. Run Real-ESRGAN (GPU required – will activate once Docker + A10 are added)
+    # 3. Run Real-ESRGAN (absolute path fix)
     subprocess.run(
         [
             "python3",
-            "inference_realesrgan.py",
+            "/app/Real-ESRGAN/inference_realesrgan.py",
             "-n", "RealESRGAN_x2plus",
             "-s", str(scale),
             "-i", str(frames_dir),
@@ -206,14 +206,10 @@ def handler(job):
     probe = _ffprobe(input_path)
     meta = _extract_video_metadata(probe)
 
-    try:
-        if upscale_method == "ai":
-            output_path = _ai_upscale_video(input_path, meta)
-        else:
-            raise RuntimeError("FFmpeg-only upscale path is disabled for stock quality")
-
-    except Exception:
-        raise  # fail hard – no silent downgrades for stock
+    if upscale_method == "ai":
+        output_path = _ai_upscale_video(input_path, meta)
+    else:
+        raise RuntimeError("FFmpeg-only upscale path is disabled for stock quality")
 
     public_url = _upload_to_r2(
         file_path=output_path,
