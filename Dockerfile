@@ -26,13 +26,16 @@ RUN apt-get update && apt-get install -y \
 RUN pip3 install --upgrade pip
 
 # -------------------------
-# PyTorch (CUDA 12.1)
+# PyTorch (PINNED — IMPORTANT)
 # -------------------------
-RUN pip3 install torch torchvision torchaudio \
+RUN pip3 install \
+    torch==2.0.1 \
+    torchvision==0.15.2 \
+    torchaudio==2.0.2 \
     --index-url https://download.pytorch.org/whl/cu121
 
 # -------------------------
-# Runtime Python deps
+# Runtime deps
 # -------------------------
 RUN pip3 install \
     runpod \
@@ -52,12 +55,11 @@ RUN pip3 install \
 RUN git clone https://github.com/xinntao/Real-ESRGAN.git
 
 WORKDIR /app/Real-ESRGAN
-
 RUN pip3 install -r requirements.txt
 RUN pip3 install -e .
 
 # -------------------------
-# Download model weights (FIXED)
+# Model weights (curl, not wget)
 # -------------------------
 RUN mkdir -p weights && \
     curl -L \
@@ -65,7 +67,7 @@ RUN mkdir -p weights && \
     https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x2plus.pth
 
 # -------------------------
-# App code
+# App
 # -------------------------
 WORKDIR /app
 COPY handler.py /app/handler.py
