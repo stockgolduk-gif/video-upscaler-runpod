@@ -12,7 +12,7 @@ from botocore.client import Config
 
 TMP_DIR = Path("/tmp")
 REALESRGAN_DIR = Path("/app/Real-ESRGAN")
-WEIGHTS_PATH = REALESRGAN_DIR / "weights" / "RealESRGAN_x2plus.pth"
+MODEL_PATH = REALESRGAN_DIR / "weights" / "RealESRGAN_x2plus.pth"
 
 # -------------------------
 # Utilities
@@ -33,14 +33,11 @@ def _download(url: str, dest: Path) -> None:
         f.write(r.read())
 
 def _ffprobe(path: Path) -> dict:
-    cmd = [
-        "ffprobe", "-v", "error",
-        "-print_format", "json",
-        "-show_format",
-        "-show_streams",
-        str(path),
-    ]
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    p = subprocess.run(
+        ["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", "-show_format", str(path)],
+        capture_output=True,
+        text=True
+    )
     if p.returncode != 0:
         raise RuntimeError(p.stderr[:500])
     return json.loads(p.stdout)
@@ -73,8 +70,7 @@ def _upload_to_r2(file_path: Path) -> str:
         region_name="auto",
     )
     bucket = os.environ["R2_BUCKET_NAME"]
-    s3.upload_file(str(file_path), bucket, file_path.name,
-                   ExtraArgs={"ContentType": "video/mp4"})
+    s3.upload_file(str(file_path), bucket, file_path.name, ExtraArgs={"ContentType": "video/mp4"})
     return f"https://pub-{account_id}.r2.dev/{bucket}/{file_path.name}"
 
 # -------------------------
@@ -82,6 +78,9 @@ def _upload_to_r2(file_path: Path) -> str:
 # -------------------------
 
 def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
+    if meta["height"] < 720:
+        raise RuntimeError("Resolution too low for stock-safe upscaling")
+
     frames = TMP_DIR / "frames"
     upscaled = TMP_DIR / "frames_upscaled"
 
@@ -91,18 +90,12 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
     upscaled.mkdir()
 
     # Extract frames
-    subprocess.run([
-        "ffmpeg", "-y", "-i", str(input_video),
-        "-vsync", "0",
-        str(frames / "frame_%06d.png")
-    ], check=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", str(input_video), "-vsync", "0", str(frames / "frame_%06d.png")],
+        check=True
+    )
 
-    if meta["height"] < 720:
-        raise RuntimeError("Resolution too low for stock-safe AI upscaling")
-
-    scale = 2
-
-    # Real-ESRGAN (explicit weights + PYTHONPATH)
+    # Real-ESRGAN (CORRECT FLAGS)
     subprocess.run(
         [
             "python3",
@@ -110,25 +103,27 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
             "-i", str(frames),
             "-o", str(upscaled),
             "-n", "RealESRGAN_x2plus",
-            "-s", str(scale),
-            "-w", str(WEIGHTS_PATH),
+            "--model_path", str(MODEL_PATH),
         ],
         cwd=str(REALESRGAN_DIR),
         env={**os.environ, "PYTHONPATH": str(REALESRGAN_DIR)},
         check=True
     )
 
-    output = TMP_DIR / f"upscaled_{meta['width']*scale}x{meta['height']*scale}.mp4"
+    output = TMP_DIR / f"upscaled_{meta['width']*2}x{meta['height']*2}.mp4"
 
-    subprocess.run([
-        "ffmpeg", "-y",
-        "-framerate", str(meta["fps"]),
-        "-i", str(upscaled / "frame_%06d.png"),
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-preset", "slow",
-        str(output)
-    ], check=True)
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-framerate", str(meta["fps"]),
+            "-i", str(upscaled / "frame_%06d.png"),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-preset", "slow",
+            str(output)
+        ],
+        check=True
+    )
 
     return output
 
