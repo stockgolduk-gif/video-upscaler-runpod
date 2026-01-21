@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     ffmpeg \
     git \
-    wget \
+    curl \
     ca-certificates \
     libgl1 \
     libglib2.0-0 \
@@ -47,7 +47,7 @@ RUN pip3 install \
     gfpgan
 
 # -------------------------
-# Real-ESRGAN (CORRECT INSTALL)
+# Real-ESRGAN
 # -------------------------
 RUN git clone https://github.com/xinntao/Real-ESRGAN.git
 
@@ -56,9 +56,12 @@ WORKDIR /app/Real-ESRGAN
 RUN pip3 install -r requirements.txt
 RUN pip3 install -e .
 
-# Download model weights (stock-safe)
+# -------------------------
+# Download model weights (FIXED)
+# -------------------------
 RUN mkdir -p weights && \
-    wget -O weights/RealESRGAN_x2plus.pth \
+    curl -L \
+    -o weights/RealESRGAN_x2plus.pth \
     https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x2plus.pth
 
 # -------------------------
