@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     ffmpeg \
     git \
+    wget \
     ca-certificates \
     libgl1 \
     libglib2.0-0 \
@@ -24,7 +25,7 @@ RUN apt-get update && apt-get install -y \
 # -------------------------
 RUN pip3 install --upgrade pip
 
-# PyTorch (CUDA 12.1 compatible)
+# PyTorch (CUDA 12.1)
 RUN pip3 install torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cu121
 
