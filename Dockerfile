@@ -14,22 +14,26 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     ffmpeg \
     git \
-    curl \
+    wget \
     ca-certificates \
     libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # -------------------------
-# Python
+# Python base
 # -------------------------
 RUN pip3 install --upgrade pip
 
-# PyTorch CUDA 12.1 (L4 compatible)
+# -------------------------
+# PyTorch (CUDA 12.1)
+# -------------------------
 RUN pip3 install torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Runtime deps
+# -------------------------
+# Runtime Python deps
+# -------------------------
 RUN pip3 install \
     runpod \
     boto3 \
@@ -43,23 +47,22 @@ RUN pip3 install \
     gfpgan
 
 # -------------------------
-# Real-ESRGAN
+# Real-ESRGAN (CORRECT INSTALL)
 # -------------------------
 RUN git clone https://github.com/xinntao/Real-ESRGAN.git
 
 WORKDIR /app/Real-ESRGAN
+
 RUN pip3 install -r requirements.txt
+RUN pip3 install -e .
 
-# -------------------------
-# Download model weights (STABLE METHOD)
-# -------------------------
+# Download model weights (stock-safe)
 RUN mkdir -p weights && \
-    curl -L --retry 5 --retry-delay 5 \
-    -o weights/RealESRGAN_x2plus.pth \
-    https://raw.githubusercontent.com/xinntao/Real-ESRGAN/master/weights/RealESRGAN_x2plus.pth
+    wget -O weights/RealESRGAN_x2plus.pth \
+    https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x2plus.pth
 
 # -------------------------
-# App
+# App code
 # -------------------------
 WORKDIR /app
 COPY handler.py /app/handler.py
