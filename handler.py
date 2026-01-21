@@ -12,9 +12,10 @@ from botocore.client import Config
 
 TMP_DIR = Path("/tmp")
 REALESRGAN_DIR = Path("/app/Real-ESRGAN")
+WEIGHTS_PATH = REALESRGAN_DIR / "weights" / "RealESRGAN_x2plus.pth"
 
 # -------------------------
-# Utility helpers
+# Utilities
 # -------------------------
 
 def _safe_filename_from_url(url: str) -> str:
@@ -27,17 +28,13 @@ def _safe_filename_from_url(url: str) -> str:
 
 def _download(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "runpod-video-upscaler/1.0"}
-    )
+    req = urllib.request.Request(url, headers={"User-Agent": "runpod-upscaler/1.0"})
     with urllib.request.urlopen(req, timeout=180) as r, open(dest, "wb") as f:
         f.write(r.read())
 
 def _ffprobe(path: Path) -> dict:
     cmd = [
-        "ffprobe",
-        "-v", "error",
+        "ffprobe", "-v", "error",
         "-print_format", "json",
         "-show_format",
         "-show_streams",
@@ -45,21 +42,16 @@ def _ffprobe(path: Path) -> dict:
     ]
     p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode != 0:
-        raise RuntimeError(f"ffprobe failed: {p.stderr[:500]}")
+        raise RuntimeError(p.stderr[:500])
     return json.loads(p.stdout)
 
 def _extract_video_metadata(probe: dict) -> dict:
-    streams = probe.get("streams", [])
-    v = next((s for s in streams if s.get("codec_type") == "video"), None)
-    if not v:
-        raise RuntimeError("No video stream found")
-
+    v = next(s for s in probe["streams"] if s["codec_type"] == "video")
     num, den = (v.get("r_frame_rate") or "0/1").split("/")
     fps = float(num) / float(den) if float(den) else 0.0
-
     return {
-        "width": int(v.get("width")),
-        "height": int(v.get("height")),
+        "width": int(v["width"]),
+        "height": int(v["height"]),
         "fps": round(fps, 3),
         "duration_seconds": float(probe["format"].get("duration", 0)),
         "codec": v.get("codec_name"),
@@ -67,107 +59,85 @@ def _extract_video_metadata(probe: dict) -> dict:
     }
 
 # -------------------------
-# R2 upload
+# R2 Upload
 # -------------------------
 
-def _upload_to_r2(file_path: Path, object_name: str) -> str:
+def _upload_to_r2(file_path: Path) -> str:
     account_id = os.environ["R2_ACCOUNT_ID"]
-    access_key = os.environ["R2_ACCESS_KEY_ID"]
-    secret_key = os.environ["R2_SECRET_ACCESS_KEY"]
-    bucket = os.environ["R2_BUCKET_NAME"]
-
     s3 = boto3.client(
         "s3",
         endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
+        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
         config=Config(signature_version="s3v4"),
         region_name="auto",
     )
-
-    s3.upload_file(
-        Filename=str(file_path),
-        Bucket=bucket,
-        Key=object_name,
-        ExtraArgs={"ContentType": "video/mp4"}
-    )
-
-    return f"https://pub-{account_id}.r2.dev/{bucket}/{object_name}"
+    bucket = os.environ["R2_BUCKET_NAME"]
+    s3.upload_file(str(file_path), bucket, file_path.name,
+                   ExtraArgs={"ContentType": "video/mp4"})
+    return f"https://pub-{account_id}.r2.dev/{bucket}/{file_path.name}"
 
 # -------------------------
-# AI Upscaling (Real-ESRGAN)
+# AI Upscaling
 # -------------------------
 
 def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
-    frames_dir = TMP_DIR / "frames"
-    upscaled_dir = TMP_DIR / "frames_upscaled"
+    frames = TMP_DIR / "frames"
+    upscaled = TMP_DIR / "frames_upscaled"
 
-    shutil.rmtree(frames_dir, ignore_errors=True)
-    shutil.rmtree(upscaled_dir, ignore_errors=True)
+    shutil.rmtree(frames, ignore_errors=True)
+    shutil.rmtree(upscaled, ignore_errors=True)
+    frames.mkdir()
+    upscaled.mkdir()
 
-    frames_dir.mkdir(parents=True)
-    upscaled_dir.mkdir(parents=True)
+    # Extract frames
+    subprocess.run([
+        "ffmpeg", "-y", "-i", str(input_video),
+        "-vsync", "0",
+        str(frames / "frame_%06d.png")
+    ], check=True)
 
-    # 1. Extract frames
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i", str(input_video),
-            "-vsync", "0",
-            str(frames_dir / "frame_%06d.png"),
-        ],
-        check=True
-    )
-
-    # 2. Decide scale (stock-safe)
-    if meta["height"] >= 720:
-        scale = 2
-    else:
+    if meta["height"] < 720:
         raise RuntimeError("Resolution too low for stock-safe AI upscaling")
 
-    # 3. Run Real-ESRGAN (NO fp32 flag)
+    scale = 2
+
+    # Real-ESRGAN (explicit weights + PYTHONPATH)
     subprocess.run(
         [
             "python3",
             "inference_realesrgan.py",
+            "-i", str(frames),
+            "-o", str(upscaled),
             "-n", "RealESRGAN_x2plus",
             "-s", str(scale),
-            "-i", str(frames_dir),
-            "-o", str(upscaled_dir),
+            "-w", str(WEIGHTS_PATH),
         ],
         cwd=str(REALESRGAN_DIR),
+        env={**os.environ, "PYTHONPATH": str(REALESRGAN_DIR)},
         check=True
     )
 
-    # 4. Reassemble video
-    output_path = TMP_DIR / f"upscaled_{meta['width']*scale}x{meta['height']*scale}.mp4"
+    output = TMP_DIR / f"upscaled_{meta['width']*scale}x{meta['height']*scale}.mp4"
 
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-framerate", str(meta["fps"]),
-            "-i", str(upscaled_dir / "frame_%06d.png"),
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-preset", "slow",
-            str(output_path),
-        ],
-        check=True
-    )
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-framerate", str(meta["fps"]),
+        "-i", str(upscaled / "frame_%06d.png"),
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-preset", "slow",
+        str(output)
+    ], check=True)
 
-    return output_path
+    return output
 
 # -------------------------
-# Main handler
+# Handler
 # -------------------------
 
 def handler(job):
-    job_input = job.get("input", {}) or {}
-
-    video_url = job_input.get("video_url")
-
+    video_url = job.get("input", {}).get("video_url")
     if not video_url:
         return {"status": "error", "error": "Missing input.video_url"}
 
@@ -175,10 +145,8 @@ def handler(job):
     _download(video_url, input_path)
 
     meta = _extract_video_metadata(_ffprobe(input_path))
-
     output_path = _ai_upscale_video(input_path, meta)
-
-    public_url = _upload_to_r2(output_path, output_path.name)
+    public_url = _upload_to_r2(output_path)
 
     return {
         "status": "ok",
