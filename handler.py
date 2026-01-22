@@ -151,7 +151,7 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
     upscaled_dir.mkdir()
 
     # --------------------------------------------------------
-    # 1. Extract frames (FIXED)
+    # 1. Extract frames (deterministic + safe)
     # --------------------------------------------------------
 
     subprocess.run(
@@ -211,7 +211,7 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
         cv2.imwrite(str(upscaled_dir / frame.name), output)
 
     # --------------------------------------------------------
-    # 4. Reassemble video (FIXED)
+    # 4. Reassemble video
     # --------------------------------------------------------
 
     output_path = TMP_DIR / f"upscaled_{meta['width']*2}x{meta['height']*2}.mp4"
@@ -237,21 +237,47 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
 # ============================================================
 
 def handler(job):
-    try:
-        video_url = job.get("input", {}).get("video_url")
-        if not video_url:
-            return {"status": "error", "error": "Missing input.video_url"}
+    # --------------------------------------------------------
+    # PROOF OF EXECUTION
+    # --------------------------------------------------------
+    print("HANDLER FUNCTION ENTERED", flush=True)
+    print("RAW JOB PAYLOAD:", job, flush=True)
 
+    try:
+        # ----------------------------------------------------
+        # Robust input handling (accept both payload shapes)
+        # ----------------------------------------------------
+        if isinstance(job, dict):
+            if "input" in job and isinstance(job["input"], dict):
+                video_url = job["input"].get("video_url")
+            else:
+                video_url = job.get("video_url")
+        else:
+            video_url = None
+
+        if not video_url:
+            raise RuntimeError(
+                "No video_url provided. Expected:\n"
+                "{ 'input': { 'video_url': 'https://...' } }"
+            )
+
+        print("VIDEO URL:", video_url, flush=True)
+
+        # ----------------------------------------------------
+        # Pipeline
+        # ----------------------------------------------------
         input_path = TMP_DIR / _safe_filename_from_url(video_url)
         _download(video_url, input_path)
 
         meta = _extract_meta(_ffprobe(input_path))
+        print("VIDEO META:", meta, flush=True)
+
         output_path = _ai_upscale_video(input_path, meta)
         public_url = _upload_to_r2(output_path)
 
         return {
             "status": "ok",
-            "message": "AI upscaled video processed and uploaded successfully",
+            "message": "AI upscaled video processed successfully",
             "output": {
                 "filename": output_path.name,
                 "public_url": public_url,
