@@ -1,13 +1,12 @@
-FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
 # -------------------------
-# System dependencies
+# System deps
 # -------------------------
 RUN apt-get update && apt-get install -y \
     python3 \
@@ -18,65 +17,54 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     libgl1 \
     libglib2.0-0 \
-    bash \
     && rm -rf /var/lib/apt/lists/*
 
-# -------------------------
-# Python tooling
-# -------------------------
-RUN pip3 install --upgrade pip setuptools wheel
+RUN python3 -m pip install --upgrade pip
 
 # -------------------------
-# PyTorch (PINNED, CUDA 11.8)
+# PyTorch (known stable on RunPod)
 # -------------------------
-RUN pip3 install --no-cache-dir \
+RUN pip install \
     torch==2.0.1 \
     torchvision==0.15.2 \
     torchaudio==2.0.2 \
     --index-url https://download.pytorch.org/whl/cu118
 
 # -------------------------
-# Runtime deps (PINNED)
+# Python deps
 # -------------------------
-RUN pip3 install --no-cache-dir \
+RUN pip install \
     runpod \
-    boto3 \
-    botocore \
-    requests \
     numpy \
     opencv-python \
     pillow \
     tqdm \
+    requests \
+    boto3 \
     basicsr==1.4.2 \
     facexlib==0.3.0 \
     gfpgan==1.3.8
 
 # -------------------------
-# Real-ESRGAN (install as package, no dependency override)
+# Real-ESRGAN (simple install)
 # -------------------------
-RUN git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git /app/Real-ESRGAN
+RUN git clone https://github.com/xinntao/Real-ESRGAN.git
 WORKDIR /app/Real-ESRGAN
-
-# IMPORTANT: install without deps to preserve pins
-RUN pip3 install --no-cache-dir -e . --no-deps
+RUN pip install -r requirements.txt
+RUN python3 setup.py develop
 
 # -------------------------
 # Model weights
 # -------------------------
 RUN mkdir -p weights && \
     curl -L \
-      -o weights/RealESRGAN_x2plus.pth \
-      https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x2plus.pth
+    -o weights/RealESRGAN_x2plus.pth \
+    https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x2plus.pth
 
 # -------------------------
 # App
 # -------------------------
 WORKDIR /app
-COPY handler.py /app/handler.py
+COPY handler.py .
 
-# -------------------------
-# DEBUG ENTRYPOINT (CRITICAL)
-# -------------------------
-# -u = unbuffered output
-# || sleep keeps container alive so logs are visible
-CMD ["bash", "-c", "python3 -u /app/handler.py || sleep 3600"]
+CMD ["python3", "handler.py"]
