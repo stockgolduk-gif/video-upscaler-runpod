@@ -1,299 +1,115 @@
-# ============================================================
-# ABSOLUTE FIRST LINE — proves Python even starts
-# ============================================================
-
-print("HANDLER FILE LOADED", flush=True)
-
-# ============================================================
-# Standard library
-# ============================================================
-
-import sys
-import traceback
+import runpod
 import os
-import json
-import urllib.request
-import urllib.parse
-from pathlib import Path
-import shutil
 import subprocess
+import urllib.request
+from pathlib import Path
+import traceback
+import boto3
+from botocore.client import Config
 
-# ============================================================
-# Early diagnostics — before Real-ESRGAN imports
-# ============================================================
+print("NCNN HANDLER LOADED", flush=True)
 
-try:
-    import torch
-    import torchvision
-    print("TORCH VERSION:", torch.__version__, flush=True)
-    print("TORCHVISION VERSION:", torchvision.__version__, flush=True)
-    print("CUDA AVAILABLE:", torch.cuda.is_available(), flush=True)
-except Exception:
-    print("FAILED DURING TORCH IMPORT", flush=True)
-    traceback.print_exc()
-    sys.exit(1)
+TMP = Path("/tmp")
+BIN = "/app/realesrgan/realesrgan-ncnn-vulkan"
+MODEL_DIR = "/app/models"
 
-# ============================================================
-# Remaining imports (after torch is known-good)
-# ============================================================
-
-try:
-    import runpod
-    import cv2
-    import numpy as np
-
-    from realesrgan import RealESRGANer
-    from basicsr.archs.rrdbnet_arch import RRDBNet
-
-    import boto3
-    from botocore.client import Config
-
-    print("ALL IMPORTS SUCCESSFUL", flush=True)
-except Exception:
-    print("FAILED DURING SECONDARY IMPORTS", flush=True)
-    traceback.print_exc()
-    sys.exit(1)
-
-# ============================================================
-# Paths & constants
-# ============================================================
-
-TMP_DIR = Path("/tmp")
-MODEL_PATH = Path("/app/Real-ESRGAN/weights/RealESRGAN_x2plus.pth")
-
-# ============================================================
+# --------------------------------------------------
 # Utilities
-# ============================================================
+# --------------------------------------------------
 
-def _safe_filename_from_url(url: str) -> str:
-    parsed = urllib.parse.urlparse(url)
-    name = os.path.basename(parsed.path) or "input.mp4"
-    name = "".join(c for c in name if c.isalnum() or c in ("-", "_", ".", " "))
-    if not name.lower().endswith(".mp4"):
-        name += ".mp4"
-    return name
-
-def _download(url: str, dest: Path):
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "runpod-upscaler/1.0"}
-    )
-    with urllib.request.urlopen(req, timeout=180) as r, open(dest, "wb") as f:
+def download(url: str, dest: Path):
+    with urllib.request.urlopen(url) as r, open(dest, "wb") as f:
         f.write(r.read())
 
-def _ffprobe(path: Path) -> dict:
-    p = subprocess.run(
-        [
-            "ffprobe",
-            "-v", "error",
-            "-print_format", "json",
-            "-show_streams",
-            "-show_format",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if p.returncode != 0:
-        raise RuntimeError(p.stderr)
-    return json.loads(p.stdout)
-
-def _extract_meta(probe: dict) -> dict:
-    v = next(s for s in probe["streams"] if s["codec_type"] == "video")
-    num, den = (v.get("r_frame_rate") or "0/1").split("/")
-    fps = float(num) / float(den) if float(den) != 0 else 0.0
-    return {
-        "width": int(v["width"]),
-        "height": int(v["height"]),
-        "fps": round(fps, 3),
-    }
-
-# ============================================================
-# R2 upload
-# ============================================================
-
-def _upload_to_r2(file_path: Path) -> str:
-    account_id = os.environ["R2_ACCOUNT_ID"]
-    bucket = os.environ["R2_BUCKET_NAME"]
-
+def upload_to_r2(path: Path) -> str:
     s3 = boto3.client(
         "s3",
-        endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+        endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
         aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
         aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
         config=Config(signature_version="s3v4"),
         region_name="auto",
     )
 
-    s3.upload_file(
-        str(file_path),
-        bucket,
-        file_path.name,
-        ExtraArgs={"ContentType": "video/mp4"},
-    )
+    bucket = os.environ["R2_BUCKET_NAME"]
+    s3.upload_file(str(path), bucket, path.name, ExtraArgs={"ContentType": "video/mp4"})
 
-    return f"https://pub-{account_id}.r2.dev/{bucket}/{file_path.name}"
+    return f"https://pub-{os.environ['R2_ACCOUNT_ID']}.r2.dev/{bucket}/{path.name}"
 
-# ============================================================
-# AI Upscaling (Python API)
-# ============================================================
-
-def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
-    if meta["height"] < 720:
-        raise RuntimeError("Resolution too low for stock-safe upscaling")
-
-    frames_dir = TMP_DIR / "frames"
-    upscaled_dir = TMP_DIR / "frames_upscaled"
-
-    shutil.rmtree(frames_dir, ignore_errors=True)
-    shutil.rmtree(upscaled_dir, ignore_errors=True)
-    frames_dir.mkdir()
-    upscaled_dir.mkdir()
-
-    # --------------------------------------------------------
-    # 1. Extract frames (deterministic + safe)
-    # --------------------------------------------------------
-
-    subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-i", str(input_video),
-            "-start_number", "1",
-            "-vf", f"fps={meta['fps']}",
-            str(frames_dir / "frame_%06d.png"),
-        ],
-        check=True,
-    )
-
-    frames = list(frames_dir.glob("*.png"))
-    print(f"EXTRACTED FRAMES: {len(frames)}", flush=True)
-
-    if not frames:
-        raise RuntimeError("No frames extracted — aborting job")
-
-    # --------------------------------------------------------
-    # 2. Load model
-    # --------------------------------------------------------
-
-    model = RRDBNet(
-        num_in_ch=3,
-        num_out_ch=3,
-        num_feat=64,
-        num_block=23,
-        num_grow_ch=32,
-        scale=2,
-    )
-
-    upsampler = RealESRGANer(
-        scale=2,
-        model_path=str(MODEL_PATH),
-        model=model,
-        tile=0,
-        tile_pad=10,
-        pre_pad=0,
-        half=True,
-        device=torch.device("cuda"),
-    )
-
-    # --------------------------------------------------------
-    # 3. Process frames
-    # --------------------------------------------------------
-
-    for i, frame in enumerate(sorted(frames)):
-        if i % 50 == 0:
-            print(f"Upscaling frame {i}/{len(frames)}", flush=True)
-
-        img = cv2.imread(str(frame), cv2.IMREAD_COLOR)
-        if img is None:
-            raise RuntimeError(f"Failed to read frame {frame}")
-
-        output, _ = upsampler.enhance(img, outscale=2)
-        cv2.imwrite(str(upscaled_dir / frame.name), output)
-
-    # --------------------------------------------------------
-    # 4. Reassemble video
-    # --------------------------------------------------------
-
-    output_path = TMP_DIR / f"upscaled_{meta['width']*2}x{meta['height']*2}.mp4"
-
-    subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-framerate", str(meta["fps"]),
-            "-start_number", "1",
-            "-i", str(upscaled_dir / "frame_%06d.png"),
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-preset", "slow",
-            str(output_path),
-        ],
-        check=True,
-    )
-
-    return output_path
-
-# ============================================================
-# RunPod handler
-# ============================================================
+# --------------------------------------------------
+# Handler
+# --------------------------------------------------
 
 def handler(job):
-    # --------------------------------------------------------
-    # PROOF OF EXECUTION
-    # --------------------------------------------------------
-    print("HANDLER FUNCTION ENTERED", flush=True)
-    print("RAW JOB PAYLOAD:", job, flush=True)
+    print("JOB RECEIVED:", job, flush=True)
 
     try:
-        # ----------------------------------------------------
-        # Robust input handling (accept both payload shapes)
-        # ----------------------------------------------------
-        if isinstance(job, dict):
-            if "input" in job and isinstance(job["input"], dict):
-                video_url = job["input"].get("video_url")
-            else:
-                video_url = job.get("video_url")
-        else:
-            video_url = None
+        video_url = (
+            job.get("input", {}).get("video_url")
+            if isinstance(job, dict)
+            else None
+        )
 
         if not video_url:
-            raise RuntimeError(
-                "No video_url provided. Expected:\n"
-                "{ 'input': { 'video_url': 'https://...' } }"
-            )
+            raise RuntimeError("Missing input.video_url")
 
-        print("VIDEO URL:", video_url, flush=True)
+        input_video = TMP / "input.mp4"
+        upscaled_video = TMP / "upscaled.mp4"
+        final_video = TMP / "final_4k.mp4"
 
-        # ----------------------------------------------------
-        # Pipeline
-        # ----------------------------------------------------
-        input_path = TMP_DIR / _safe_filename_from_url(video_url)
-        _download(video_url, input_path)
+        print("Downloading video...", flush=True)
+        download(video_url, input_video)
 
-        meta = _extract_meta(_ffprobe(input_path))
-        print("VIDEO META:", meta, flush=True)
+        # --------------------------------------------------
+        # Step 1 — 2× upscale with Real-ESRGAN NCNN
+        # --------------------------------------------------
+        print("Running Real-ESRGAN NCNN...", flush=True)
+        subprocess.run(
+            [
+                BIN,
+                "-i", str(input_video),
+                "-o", str(upscaled_video),
+                "-n", "RealESRGAN_x2plus",
+                "-s", "2",
+                "-m", MODEL_DIR,
+            ],
+            check=True,
+        )
 
-        output_path = _ai_upscale_video(input_path, meta)
-        public_url = _upload_to_r2(output_path)
+        # --------------------------------------------------
+        # Step 2 — Ensure true 4K (2160p height)
+        # --------------------------------------------------
+        print("Final FFmpeg scale to 4K...", flush=True)
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", str(upscaled_video),
+                "-vf", "scale=-2:2160",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-preset", "slow",
+                str(final_video),
+            ],
+            check=True,
+        )
+
+        # --------------------------------------------------
+        # Upload
+        # --------------------------------------------------
+        url = upload_to_r2(final_video)
 
         return {
             "status": "ok",
-            "message": "AI upscaled video processed successfully",
             "output": {
-                "filename": output_path.name,
-                "public_url": public_url,
+                "public_url": url,
             },
         }
 
     except Exception as e:
-        print("HANDLER RUNTIME ERROR", flush=True)
         traceback.print_exc()
         return {
             "status": "error",
             "error": str(e),
         }
-
-# ============================================================
-# Start serverless worker
-# ============================================================
 
 runpod.serverless.start({"handler": handler})
