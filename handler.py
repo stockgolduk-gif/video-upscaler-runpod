@@ -1,3 +1,13 @@
+# ============================================================
+# ABSOLUTE FIRST LINE — proves Python even starts
+# ============================================================
+
+print("HANDLER FILE LOADED", flush=True)
+
+# ============================================================
+# Standard library
+# ============================================================
+
 import sys
 import traceback
 import os
@@ -8,44 +18,52 @@ from pathlib import Path
 import shutil
 import subprocess
 
-# -------------------------
-# Early diagnostics (CRITICAL)
-# -------------------------
+# ============================================================
+# Early diagnostics — before Real-ESRGAN imports
+# ============================================================
 
 try:
     import torch
     import torchvision
-    print("TORCH VERSION:", torch.__version__)
-    print("TORCHVISION VERSION:", torchvision.__version__)
-    print("CUDA AVAILABLE:", torch.cuda.is_available())
+    print("TORCH VERSION:", torch.__version__, flush=True)
+    print("TORCHVISION VERSION:", torchvision.__version__, flush=True)
+    print("CUDA AVAILABLE:", torch.cuda.is_available(), flush=True)
 except Exception:
+    print("FAILED DURING TORCH IMPORT", flush=True)
     traceback.print_exc()
     sys.exit(1)
 
-# -------------------------
-# Safe imports (after torch)
-# -------------------------
+# ============================================================
+# Remaining imports (after torch is known-good)
+# ============================================================
 
-import runpod
-import cv2
-import numpy as np
+try:
+    import runpod
+    import cv2
+    import numpy as np
 
-from realesrgan import RealESRGANer
-from basicsr.archs.rrdbnet_arch import RRDBNet
+    from realesrgan import RealESRGANer
+    from basicsr.archs.rrdbnet_arch import RRDBNet
 
-import boto3
-from botocore.client import Config
+    import boto3
+    from botocore.client import Config
 
-# -------------------------
+    print("ALL IMPORTS SUCCESSFUL", flush=True)
+except Exception:
+    print("FAILED DURING SECONDARY IMPORTS", flush=True)
+    traceback.print_exc()
+    sys.exit(1)
+
+# ============================================================
 # Paths & constants
-# -------------------------
+# ============================================================
 
 TMP_DIR = Path("/tmp")
 MODEL_PATH = Path("/app/Real-ESRGAN/weights/RealESRGAN_x2plus.pth")
 
-# -------------------------
+# ============================================================
 # Utilities
-# -------------------------
+# ============================================================
 
 def _safe_filename_from_url(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
@@ -90,9 +108,9 @@ def _extract_meta(probe: dict) -> dict:
         "fps": round(fps, 3),
     }
 
-# -------------------------
+# ============================================================
 # R2 upload
-# -------------------------
+# ============================================================
 
 def _upload_to_r2(file_path: Path) -> str:
     account_id = os.environ["R2_ACCOUNT_ID"]
@@ -116,9 +134,9 @@ def _upload_to_r2(file_path: Path) -> str:
 
     return f"https://pub-{account_id}.r2.dev/{bucket}/{file_path.name}"
 
-# -------------------------
+# ============================================================
 # AI Upscaling (Python API)
-# -------------------------
+# ============================================================
 
 def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
     if meta["height"] < 720:
@@ -143,7 +161,7 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
         check=True,
     )
 
-    # 2. Load model (PINNED & SAFE)
+    # 2. Load model
     model = RRDBNet(
         num_in_ch=3,
         num_out_ch=3,
@@ -191,9 +209,9 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
 
     return output_path
 
-# -------------------------
+# ============================================================
 # RunPod handler
-# -------------------------
+# ============================================================
 
 def handler(job):
     try:
@@ -218,14 +236,15 @@ def handler(job):
         }
 
     except Exception as e:
+        print("HANDLER RUNTIME ERROR", flush=True)
         traceback.print_exc()
         return {
             "status": "error",
             "error": str(e),
         }
 
-# -------------------------
+# ============================================================
 # Start serverless worker
-# -------------------------
+# ============================================================
 
 runpod.serverless.start({"handler": handler})
