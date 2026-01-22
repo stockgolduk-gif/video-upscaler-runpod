@@ -18,8 +18,12 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     libgl1 \
     libglib2.0-0 \
+    bash \
     && rm -rf /var/lib/apt/lists/*
 
+# -------------------------
+# Python tooling
+# -------------------------
 RUN pip3 install --upgrade pip setuptools wheel
 
 # -------------------------
@@ -53,16 +57,16 @@ RUN pip3 install --no-cache-dir \
 RUN git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git /app/Real-ESRGAN
 WORKDIR /app/Real-ESRGAN
 
-# IMPORTANT:
-# - install Real-ESRGAN *without* letting it change your pinned deps
+# IMPORTANT: install without deps to preserve pins
 RUN pip3 install --no-cache-dir -e . --no-deps
 
 # -------------------------
 # Model weights
 # -------------------------
 RUN mkdir -p weights && \
-    curl -L -o weights/RealESRGAN_x2plus.pth \
-    https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x2plus.pth
+    curl -L \
+      -o weights/RealESRGAN_x2plus.pth \
+      https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x2plus.pth
 
 # -------------------------
 # App
@@ -70,4 +74,9 @@ RUN mkdir -p weights && \
 WORKDIR /app
 COPY handler.py /app/handler.py
 
-CMD ["python3", "handler.py"]
+# -------------------------
+# DEBUG ENTRYPOINT (CRITICAL)
+# -------------------------
+# -u = unbuffered output
+# || sleep keeps container alive so logs are visible
+CMD ["bash", "-c", "python3 -u /app/handler.py || sleep 3600"]
