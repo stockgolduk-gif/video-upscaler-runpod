@@ -26,13 +26,13 @@ RUN apt-get update && apt-get install -y \
 RUN pip3 install --upgrade pip setuptools wheel
 
 # -------------------------
-# PyTorch (CUDA 12.1 – REQUIRED)
+# PyTorch (CUDA 11.8 – COMPATIBLE)
 # -------------------------
 RUN pip3 install \
     torch==2.0.1 \
     torchvision==0.15.2 \
     torchaudio==2.0.2 \
-    --index-url https://download.pytorch.org/whl/cu121
+    --index-url https://download.pytorch.org/whl/cu118
 
 # -------------------------
 # Runtime deps (PINNED)
@@ -58,7 +58,7 @@ WORKDIR /app/Real-ESRGAN
 RUN pip3 install -r requirements.txt
 
 # -------------------------
-# Model weights (stock-safe)
+# Model weights
 # -------------------------
 RUN mkdir -p weights && \
     curl -L \
