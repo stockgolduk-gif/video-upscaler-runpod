@@ -23,16 +23,15 @@ RUN apt-get update && apt-get install -y \
 # -------------------------
 # Python base
 # -------------------------
-RUN pip3 install --upgrade pip
+RUN pip3 install --upgrade pip setuptools wheel
 
 # -------------------------
-# PyTorch (PINNED — IMPORTANT)
+# PyTorch (PINNED, CPU WHEELS – CUDA via runtime)
 # -------------------------
 RUN pip3 install \
     torch==2.0.1 \
     torchvision==0.15.2 \
-    torchaudio==2.0.2 \
-    --index-url https://download.pytorch.org/whl/cu121
+    torchaudio==2.0.2
 
 # -------------------------
 # Runtime deps
@@ -59,7 +58,7 @@ RUN pip3 install -r requirements.txt
 RUN pip3 install -e .
 
 # -------------------------
-# Model weights (curl, not wget)
+# Model weights
 # -------------------------
 RUN mkdir -p weights && \
     curl -L \
