@@ -31,11 +31,11 @@ RUN pip install \
     --index-url https://download.pytorch.org/whl/cu118
 
 # -------------------------
-# Python deps
+# Python deps (NUMPY PIN FIX)
 # -------------------------
 RUN pip install \
+    numpy==1.26.4 \
     runpod \
-    numpy \
     opencv-python \
     pillow \
     tqdm \
@@ -46,7 +46,7 @@ RUN pip install \
     gfpgan==1.3.8
 
 # -------------------------
-# Real-ESRGAN (simple install)
+# Real-ESRGAN (simple, compatible install)
 # -------------------------
 RUN git clone https://github.com/xinntao/Real-ESRGAN.git
 WORKDIR /app/Real-ESRGAN
