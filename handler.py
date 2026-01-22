@@ -1,13 +1,33 @@
-import runpod
+import sys
+import traceback
 import os
 import json
 import urllib.request
 import urllib.parse
 from pathlib import Path
 import shutil
+import subprocess
 
+# -------------------------
+# Early diagnostics (CRITICAL)
+# -------------------------
+
+try:
+    import torch
+    import torchvision
+    print("TORCH VERSION:", torch.__version__)
+    print("TORCHVISION VERSION:", torchvision.__version__)
+    print("CUDA AVAILABLE:", torch.cuda.is_available())
+except Exception:
+    traceback.print_exc()
+    sys.exit(1)
+
+# -------------------------
+# Safe imports (after torch)
+# -------------------------
+
+import runpod
 import cv2
-import torch
 import numpy as np
 
 from realesrgan import RealESRGANer
@@ -15,14 +35,13 @@ from basicsr.archs.rrdbnet_arch import RRDBNet
 
 import boto3
 from botocore.client import Config
-import subprocess
 
 # -------------------------
 # Paths & constants
 # -------------------------
 
 TMP_DIR = Path("/tmp")
-MODEL_PATH = "/app/Real-ESRGAN/weights/RealESRGAN_x2plus.pth"
+MODEL_PATH = Path("/app/Real-ESRGAN/weights/RealESRGAN_x2plus.pth")
 
 # -------------------------
 # Utilities
@@ -37,14 +56,25 @@ def _safe_filename_from_url(url: str) -> str:
     return name
 
 def _download(url: str, dest: Path):
-    req = urllib.request.Request(url, headers={"User-Agent": "runpod-upscaler/1.0"})
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "runpod-upscaler/1.0"}
+    )
     with urllib.request.urlopen(req, timeout=180) as r, open(dest, "wb") as f:
         f.write(r.read())
 
 def _ffprobe(path: Path) -> dict:
     p = subprocess.run(
-        ["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", "-show_format", str(path)],
-        capture_output=True, text=True
+        [
+            "ffprobe",
+            "-v", "error",
+            "-print_format", "json",
+            "-show_streams",
+            "-show_format",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
     )
     if p.returncode != 0:
         raise RuntimeError(p.stderr)
@@ -53,7 +83,7 @@ def _ffprobe(path: Path) -> dict:
 def _extract_meta(probe: dict) -> dict:
     v = next(s for s in probe["streams"] if s["codec_type"] == "video")
     num, den = (v.get("r_frame_rate") or "0/1").split("/")
-    fps = float(num) / float(den) if float(den) else 0.0
+    fps = float(num) / float(den) if float(den) != 0 else 0.0
     return {
         "width": int(v["width"]),
         "height": int(v["height"]),
@@ -104,11 +134,16 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
 
     # 1. Extract frames
     subprocess.run(
-        ["ffmpeg", "-y", "-i", str(input_video), "-vsync", "0", str(frames_dir / "frame_%06d.png")],
-        check=True
+        [
+            "ffmpeg", "-y",
+            "-i", str(input_video),
+            "-vsync", "0",
+            str(frames_dir / "frame_%06d.png"),
+        ],
+        check=True,
     )
 
-    # 2. Load model (THIS is the key fix)
+    # 2. Load model (PINNED & SAFE)
     model = RRDBNet(
         num_in_ch=3,
         num_out_ch=3,
@@ -120,7 +155,7 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
 
     upsampler = RealESRGANer(
         scale=2,
-        model_path=MODEL_PATH,
+        model_path=str(MODEL_PATH),
         model=model,
         tile=0,
         tile_pad=10,
@@ -151,34 +186,46 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
             "-preset", "slow",
             str(output_path),
         ],
-        check=True
+        check=True,
     )
 
     return output_path
 
 # -------------------------
-# Handler
+# RunPod handler
 # -------------------------
 
 def handler(job):
-    video_url = job.get("input", {}).get("video_url")
-    if not video_url:
-        return {"status": "error", "error": "Missing input.video_url"}
+    try:
+        video_url = job.get("input", {}).get("video_url")
+        if not video_url:
+            return {"status": "error", "error": "Missing input.video_url"}
 
-    input_path = TMP_DIR / _safe_filename_from_url(video_url)
-    _download(video_url, input_path)
+        input_path = TMP_DIR / _safe_filename_from_url(video_url)
+        _download(video_url, input_path)
 
-    meta = _extract_meta(_ffprobe(input_path))
-    output_path = _ai_upscale_video(input_path, meta)
-    public_url = _upload_to_r2(output_path)
+        meta = _extract_meta(_ffprobe(input_path))
+        output_path = _ai_upscale_video(input_path, meta)
+        public_url = _upload_to_r2(output_path)
 
-    return {
-        "status": "ok",
-        "message": "AI upscaled video processed and uploaded successfully",
-        "output": {
-            "filename": output_path.name,
-            "public_url": public_url,
-        },
-    }
+        return {
+            "status": "ok",
+            "message": "AI upscaled video processed and uploaded successfully",
+            "output": {
+                "filename": output_path.name,
+                "public_url": public_url,
+            },
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "error": str(e),
+        }
+
+# -------------------------
+# Start serverless worker
+# -------------------------
 
 runpod.serverless.start({"handler": handler})
