@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
+FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -20,15 +20,12 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# -------------------------
-# Python tooling
-# -------------------------
 RUN pip3 install --upgrade pip setuptools wheel
 
 # -------------------------
-# PyTorch (CUDA 11.8 – COMPATIBLE)
+# PyTorch (PINNED, CUDA 11.8)
 # -------------------------
-RUN pip3 install \
+RUN pip3 install --no-cache-dir \
     torch==2.0.1 \
     torchvision==0.15.2 \
     torchaudio==2.0.2 \
@@ -37,9 +34,10 @@ RUN pip3 install \
 # -------------------------
 # Runtime deps (PINNED)
 # -------------------------
-RUN pip3 install \
+RUN pip3 install --no-cache-dir \
     runpod \
     boto3 \
+    botocore \
     requests \
     numpy \
     opencv-python \
@@ -50,19 +48,20 @@ RUN pip3 install \
     gfpgan==1.3.8
 
 # -------------------------
-# Real-ESRGAN
+# Real-ESRGAN (install as package, no dependency override)
 # -------------------------
-RUN git clone https://github.com/xinntao/Real-ESRGAN.git
-
+RUN git clone --depth 1 https://github.com/xinntao/Real-ESRGAN.git /app/Real-ESRGAN
 WORKDIR /app/Real-ESRGAN
-RUN pip3 install -r requirements.txt
+
+# IMPORTANT:
+# - install Real-ESRGAN *without* letting it change your pinned deps
+RUN pip3 install --no-cache-dir -e . --no-deps
 
 # -------------------------
 # Model weights
 # -------------------------
 RUN mkdir -p weights && \
-    curl -L \
-    -o weights/RealESRGAN_x2plus.pth \
+    curl -L -o weights/RealESRGAN_x2plus.pth \
     https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x2plus.pth
 
 # -------------------------
