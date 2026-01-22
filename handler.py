@@ -150,18 +150,31 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
     frames_dir.mkdir()
     upscaled_dir.mkdir()
 
-    # 1. Extract frames
+    # --------------------------------------------------------
+    # 1. Extract frames (FIXED)
+    # --------------------------------------------------------
+
     subprocess.run(
         [
             "ffmpeg", "-y",
             "-i", str(input_video),
-            "-vsync", "0",
+            "-start_number", "1",
+            "-vf", f"fps={meta['fps']}",
             str(frames_dir / "frame_%06d.png"),
         ],
         check=True,
     )
 
+    frames = list(frames_dir.glob("*.png"))
+    print(f"EXTRACTED FRAMES: {len(frames)}", flush=True)
+
+    if not frames:
+        raise RuntimeError("No frames extracted — aborting job")
+
+    # --------------------------------------------------------
     # 2. Load model
+    # --------------------------------------------------------
+
     model = RRDBNet(
         num_in_ch=3,
         num_out_ch=3,
@@ -182,8 +195,14 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
         device=torch.device("cuda"),
     )
 
+    # --------------------------------------------------------
     # 3. Process frames
-    for frame in sorted(frames_dir.glob("*.png")):
+    # --------------------------------------------------------
+
+    for i, frame in enumerate(sorted(frames)):
+        if i % 50 == 0:
+            print(f"Upscaling frame {i}/{len(frames)}", flush=True)
+
         img = cv2.imread(str(frame), cv2.IMREAD_COLOR)
         if img is None:
             raise RuntimeError(f"Failed to read frame {frame}")
@@ -191,13 +210,17 @@ def _ai_upscale_video(input_video: Path, meta: dict) -> Path:
         output, _ = upsampler.enhance(img, outscale=2)
         cv2.imwrite(str(upscaled_dir / frame.name), output)
 
-    # 4. Reassemble video
+    # --------------------------------------------------------
+    # 4. Reassemble video (FIXED)
+    # --------------------------------------------------------
+
     output_path = TMP_DIR / f"upscaled_{meta['width']*2}x{meta['height']*2}.mp4"
 
     subprocess.run(
         [
             "ffmpeg", "-y",
             "-framerate", str(meta["fps"]),
+            "-start_number", "1",
             "-i", str(upscaled_dir / "frame_%06d.png"),
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
