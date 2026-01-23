@@ -23,19 +23,12 @@ RUN python3 -m pip install --upgrade pip
 RUN pip install runpod boto3 requests
 
 # --------------------------------------------------
-# Download Real-ESRGAN NCNN Vulkan binary
+# Download Real-ESRGAN NCNN Vulkan (includes models)
 # --------------------------------------------------
 RUN mkdir -p /app/realesrgan && cd /app/realesrgan && \
     wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip && \
     unzip realesrgan-ncnn-vulkan-20220424-ubuntu.zip && \
     chmod +x realesrgan-ncnn-vulkan
-
-# --------------------------------------------------
-# Download model files
-# --------------------------------------------------
-RUN mkdir -p /app/models && cd /app/models && \
-    wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x2plus.param && \
-    wget https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x2plus.bin
 
 # --------------------------------------------------
 # App
